@@ -2,9 +2,46 @@
 
 import argparse
 import time
+import sys
 
 import dns.exception
 import dns.resolver
+
+def parse_args():
+    # Create the first parser object and get just the first parameter
+    parser = argparse.ArgumentParser('Argument format parser')
+    parser.add_argument('arg_format', type=str, help='The first argument.' +
+                        'It tells us what input to expect next.')
+    args_ns, remaining = parser.parse_known_args()
+
+    # Generate a new parser based on the first parameter
+    parser = format_specific_parser(args_ns.arg_format)
+
+    # There will always be at least one set of input (in this case at least)
+    args_ns, remaining = parser.parse_known_args(args=remaining, namespace=args_ns)
+
+    # Iterate over the remaining input, if any, adding to the namespace
+    while remaining:
+        args_ns, remaining = parser.parse_known_args(args=remaining,
+                                                     namespace=args_ns)
+
+    return args_ns
+
+def format_specific_parser(arg_format):
+    parser = argparse.ArgumentParser("Command line parser for %s" % arg_format)
+    if (arg_format == "deploy_challenge"):
+        args_deploy_challenge(parser)
+    # elif (...):
+        # other format function calls
+    else:
+        args_unknown(parser)
+    return parser
+
+def args_unknown(parser):
+    parser.add_argument("extra", nargs = '*', default = '')
+
+def args_deploy_challenge(parser):
+    parser.add_argument('challenges', type=str, action='append', nargs=3) 
 
 def get_host_authoritative_nameservers(host):
     auth_nameservers = []
@@ -76,61 +113,53 @@ LOOKUP_SLEEP_SECONDS = 60
 MAX_DNS_ATTEMPTS = 10
 DEFAULT_TTL = 120
 
-# Parse command line arguments
-# Use nargs = '?' because not all arguments will be specified each time the
-# hook script is called
-parser = argparse.ArgumentParser(prefix_chars='@')
-parser.add_argument("action", nargs = '?', default = '')
-parser.add_argument("domain", nargs = '?', default = '')
-parser.add_argument("token", nargs = '?', default = '')
-parser.add_argument("challenge", nargs = '?', default = '')
-# Extra positional argument to absorb any beyond the first four (we only
-# care about four arguments because we only take action for deploy_challenge)
-parser.add_argument("extra", nargs = '*', default = '')
-args = parser.parse_args()
-
-action = args.action
-domain = args.domain
-token = args.token
-challenge = args.challenge
+args = parse_args()
+action = args.arg_format
 
 if action == 'deploy_challenge':
-    print("++ Setting DNS for " + domain + " to " + challenge)
-    host = "_acme-challenge." + domain
-    record = "'" + host + ":" + challenge + ":" + str(DEFAULT_TTL)
+    records = args.challenges
+
+    tinydns = list()
+    for domain, token, challenge in records:
+        host = "_acme-challenge." + domain
+        tinydns.append("'" + host + ":" + challenge + ":" + str(DEFAULT_TTL))
+
     print("++ Copy the following line into your DNS zone for " + domain + " and upload")
-    print(record)
+    print(*tinydns,sep='\n')
     input("++ Press enter once DNS zone has been uploaded...")
 
-    # Get the NS records for the domain, not the host, as the host record may
-    # not exist yet
-    print("++ Get NS IP addresses to query auth servers for " + domain)
-    nameservers = get_host_authoritative_nameservers(domain)
-    ns_ip_addresses = []
+    for domain, token, challenge in records:
+        host = "_acme-challenge." + domain
 
-    for nameserver in nameservers:
-        host_ip_addresses = get_host_ip_addresses(nameserver)
-        for host_ip_address in host_ip_addresses:
-            ns_ip_addresses.append(host_ip_address)
+        # Get the NS records for the domain, not the host, as the host record may
+        # not exist yet
+        print("++ Get NS IP addresses to query auth servers for " + domain)
+        nameservers = get_host_authoritative_nameservers(domain)
+        ns_ip_addresses = []
 
-    print(ns_ip_addresses)
+        for nameserver in nameservers:
+            host_ip_addresses = get_host_ip_addresses(nameserver)
+            for host_ip_address in host_ip_addresses:
+                ns_ip_addresses.append(host_ip_address)
 
-    for current_attempt in range(MAX_DNS_ATTEMPTS):
-        print("++ Checking for DNS record, attempt: {}/{}".format(current_attempt+1, MAX_DNS_ATTEMPTS))
+        print(ns_ip_addresses)
 
-        try:
-            if verify_challenge(host, challenge, ns_ip_addresses):
-                print("++ Challenge successful!")
-                break
-        except dns.exception.Timeout:
-            print("++ DNS timeout, quitting...")
+        for current_attempt in range(MAX_DNS_ATTEMPTS):
+            print("++ Checking for DNS record, attempt: {}/{}".format(current_attempt+1, MAX_DNS_ATTEMPTS))
+
+            try:
+                if verify_challenge(host, challenge, ns_ip_addresses):
+                    print("++ Challenge successful!")
+                    break
+            except dns.exception.Timeout:
+                print("++ DNS timeout, quitting...")
+                sys.exit(1)
+            except dns.resolver.NXDOMAIN:
+                pass
+            except dns.resolver.NoAnswer:
+                pass
+
+            time.sleep(LOOKUP_SLEEP_SECONDS)
+        else:
+            print("++ Failed to find record for: " + domain)
             sys.exit(1)
-        except dns.resolver.NXDOMAIN:
-            pass
-        except dns.resolver.NoAnswer:
-            pass
-
-        time.sleep(LOOKUP_SLEEP_SECONDS)
-    else:
-        print("++ Failed to find record for: " + domain)
-        sys.exit(1)
