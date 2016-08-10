@@ -3,7 +3,7 @@
 import argparse
 import time
 import sys
-
+import subprocess
 import dns.exception
 import dns.resolver
 
@@ -113,6 +113,13 @@ LOOKUP_SLEEP_SECONDS = 60
 MAX_DNS_ATTEMPTS = 10
 DEFAULT_TTL = 120
 
+# path to the file the tinydns records will be written to
+outputfile = "/path/to/temp/file"
+
+# path to the script that will do something with the tinydns config this script produces
+# The script will be passed the value of outputfile as its first parameter
+scriptfile = "/path/to/script.(sh|py|pl|etc)"
+
 args = parse_args()
 action = args.arg_format
 
@@ -124,9 +131,13 @@ if action == 'deploy_challenge':
         host = "_acme-challenge." + domain
         tinydns.append("'" + host + ":" + challenge + ":" + str(DEFAULT_TTL))
 
-    print("++ Copy the following line into your DNS zone for " + domain + " and upload")
-    print(*tinydns,sep='\n')
-    input("++ Press enter once DNS zone has been uploaded...")
+    print("++ Writing tinydns config to " + outputfile)
+    with open(outputfile, mode='wt') as dnsconfig:
+        dnsconfig.write('\n'.join(tinydns))
+
+    if subprocess.call([scriptfile,outputfile]) != 0:
+        print("++ FATAL ERROR: " + scriptfile + " exited with non-zero status")
+        sys.exit(1)
 
     for domain, token, challenge in records:
         host = "_acme-challenge." + domain
